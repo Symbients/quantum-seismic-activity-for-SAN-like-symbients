@@ -11,9 +11,9 @@ def main():
     )
     parser.add_argument(
         "--source",
-        choices=["mic", "sim"],
+        choices=["mic", "sim", "accel"],
         default="sim",
-        help="Sensor source: mic (microphone) or sim (simulator, default)",
+        help="Sensor source: accel (hardware accelerometer, requires sudo), mic (microphone), or sim (simulator, default)",
     )
     parser.add_argument(
         "--sample-rate",
@@ -56,7 +56,14 @@ def main():
         device=int(args.device) if args.device and args.device.isdigit() else args.device,
     )
 
-    if args.source == "mic":
+    if args.source == "accel":
+        from quantum_seismic.sources.accelerometer import AccelerometerSource
+
+        # Override defaults for accelerometer (800Hz native, smaller chunks)
+        config.sample_rate = args.sample_rate if args.sample_rate != 44100 else 800
+        config.chunk_size = args.chunk_size if args.chunk_size != 2048 else 256
+        source = AccelerometerSource(config)
+    elif args.source == "mic":
         from quantum_seismic.sources.microphone import MicrophoneSource
 
         source = MicrophoneSource(config)

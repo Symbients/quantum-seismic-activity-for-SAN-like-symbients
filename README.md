@@ -33,6 +33,9 @@ The 5 detector outputs form a fingerprint. Different events have distinct signat
 ```bash
 # Requires Python 3.11+ and uv
 uv pip install -e .
+
+# For hardware accelerometer support (M2/M3/M4 Pro+)
+uv pip install -e ".[accel]"
 ```
 
 ## Usage
@@ -41,7 +44,10 @@ uv pip install -e .
 # Run with simulator (default) — generates synthetic seismic events
 quantum-seismic
 
-# Run with microphone — real vibration detection
+# Run with hardware accelerometer (requires sudo, M2/M3/M4 Pro+)
+sudo quantum-seismic --source accel
+
+# Run with microphone — vibration detection via chassis acoustics
 quantum-seismic --source mic
 
 # Headless mode — JSON event stream to stdout
@@ -65,16 +71,22 @@ quantum-seismic --sample-rate 22050 --chunk-size 1024
 Sensor Source          Detection Pipeline          Classification
 ─────────────         ──────────────────          ──────────────
                       ┌─── High-Pass ───┐
-Microphone ──┐        │    (preprocess)  │
-             ├──────► ├─── STA/LTA ─────┤
-Simulator  ──┘        ├─── CUSUM ───────┤ ──────► Rule-based    ──► Terminal UI
+Accelerometer ┐       │    (preprocess)  │
+Microphone  ──┤─────► ├─── STA/LTA ─────┤
+Simulator   ──┘       ├─── CUSUM ───────┤ ──────► Rule-based    ──► Terminal UI
                       ├─── Kurtosis ────┤         Classifier         + Event Log
                       └─── Peak/MAD ────┘
 ```
 
-### Why microphone?
+### Sensor sources
 
-Apple Silicon Macs don't expose the hardware accelerometer to userspace (CMMotionManager is iOS-only). The built-in microphone picks up mechanical vibrations through the chassis at 44.1kHz — 440x the resolution of a typical 100Hz accelerometer. This is a legitimate technique used in seismology (acoustic seismometry).
+| Source | API | Rate | Requires | Best for |
+|--------|-----|------|----------|----------|
+| **Accelerometer** | IOKit HID → Bosch BMI286 via Apple SPU | ~800Hz | `sudo`, M2/M3/M4 Pro+ | True seismic detection, gravity-referenced |
+| **Microphone** | PortAudio → built-in mic | 44.1kHz | Nothing | Acoustic vibration, highest temporal resolution |
+| **Simulator** | Synthetic event generator | Configurable | Nothing | Testing, demos |
+
+The accelerometer reads the undocumented Bosch BMI286 IMU via Apple's Sensor Processing Unit using [macimu](https://github.com/olvvier/apple-silicon-accelerometer). The microphone captures mechanical vibrations through the chassis — a legitimate technique used in seismology (acoustic seismometry).
 
 ## For SAN-like Symbients
 

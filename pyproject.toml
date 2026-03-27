@@ -25,6 +25,9 @@ dependencies = [
     "rich>=13.0",
 ]
 
+[project.optional-dependencies]
+accel = ["macimu>=0.2"]
+
 [project.scripts]
 quantum-seismic = "quantum_seismic.cli:main"
 
