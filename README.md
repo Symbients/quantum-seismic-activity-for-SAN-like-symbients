@@ -64,21 +64,17 @@ uv pip install -e ".[all]"
 ### As a library (Claude Agent SDK)
 
 ```python
-from quantum_seismic import EnvironmentDaemon, agent_hook, system_prompt
-from claude_agent_sdk import query, ClaudeAgentOptions, HookMatcher
+from quantum_seismic import EnvironmentDaemon, enrich_prompt, system_prompt
+from claude_agent_sdk import query, ClaudeAgentOptions
 
 daemon = EnvironmentDaemon(enable_accel=False)  # no sudo needed
 daemon.start()
 
+# enrich_prompt() appends live sensor data as an <environment> block
 async for message in query(
-    prompt=user_input,
+    prompt=enrich_prompt(daemon, user_input),
     options=ClaudeAgentOptions(
         system_prompt=system_prompt(),
-        hooks={
-            "UserPromptSubmit": [
-                HookMatcher(matcher=".*", hooks=[agent_hook(daemon)])
-            ]
-        },
     ),
 ):
     ...

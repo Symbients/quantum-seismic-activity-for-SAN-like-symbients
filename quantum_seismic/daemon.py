@@ -11,6 +11,7 @@ import time
 from quantum_seismic.enrichment.seismic_api import SeismicAPI
 from quantum_seismic.sensors.base import SensorChunk, SensorConfig
 from quantum_seismic.sensors.location import LocationSensor
+from quantum_seismic.sensors.vad import VoiceActivityDetector
 from quantum_seismic.sensors.webcam import WebcamSensor
 from quantum_seismic.snapshot import (
     AcousticState,
@@ -20,6 +21,7 @@ from quantum_seismic.snapshot import (
     SeismicState,
     VisualState,
 )
+from quantum_seismic.store import StateStore
 from quantum_seismic.temporal import (
     RollingAggregator,
     classify_acoustic_regime,
@@ -50,21 +52,30 @@ class EnvironmentDaemon:
         enable_location: bool = True,
         enable_webcam: bool = True,
         enable_seismic_api: bool = True,
+        enable_persistence: bool = True,
         webcam_interval_s: float = 300.0,
         webcam_model: str = "claude-haiku-4-5-20251001",
         seismic_poll_s: float = 300.0,
         accel_sample_rate: int = 800,
         mic_sample_rate: int = 44100,
+        db_path: str | None = None,
     ):
         self._enable_accel = enable_accel
         self._enable_mic = enable_mic
         self._enable_location = enable_location
         self._enable_webcam = enable_webcam
         self._enable_seismic_api = enable_seismic_api
+        self._enable_persistence = enable_persistence
 
         # Temporal aggregators
         self._accel_agg = RollingAggregator()
         self._mic_agg = RollingAggregator()
+
+        # Voice activity detection
+        self._vad = VoiceActivityDetector(sample_rate=mic_sample_rate)
+
+        # Persistence
+        self._store = StateStore(db_path) if db_path else StateStore()
 
         # Sensor instances (created on start)
         self._accel_source = None
@@ -84,6 +95,11 @@ class EnvironmentDaemon:
     def start(self) -> None:
         """Start all enabled sensors."""
         self._start_time = time.monotonic()
+
+        # Open persistence store
+        if self._enable_persistence:
+            self._store.open()
+            self._store.prune()  # clean old data on start
 
         # Accelerometer
         if self._enable_accel:
@@ -124,7 +140,6 @@ class EnvironmentDaemon:
 
         # External seismic API
         if self._enable_seismic_api:
-            # Feed location to seismic API when available
             if self._location.current:
                 loc = self._location.current
                 self._seismic_api.set_location(loc.latitude, loc.longitude)
@@ -133,10 +148,23 @@ class EnvironmentDaemon:
         self._running = True
 
     def _on_accel_chunk(self, chunk: SensorChunk) -> None:
+        import numpy as np
+
         self._accel_agg.push(chunk.data)
+        if self._enable_persistence:
+            rms = float(np.sqrt(np.mean(chunk.data**2)))
+            peak = float(np.max(np.abs(chunk.data)))
+            self._store.record_sample("accel", rms, peak)
 
     def _on_mic_chunk(self, chunk: SensorChunk) -> None:
+        import numpy as np
+
         self._mic_agg.push(chunk.data)
+        self._vad.process(chunk.data)
+        if self._enable_persistence:
+            rms = float(np.sqrt(np.mean(chunk.data**2)))
+            peak = float(np.max(np.abs(chunk.data)))
+            self._store.record_sample("mic", rms, peak)
 
     def snapshot(self) -> EnvironmentSnapshot:
         """Build a point-in-time environment snapshot."""
@@ -180,10 +208,11 @@ class EnvironmentDaemon:
             db_1hr=round(db_1hr, 1),
             db_24hr=round(db_24hr, 1),
             regime=classify_acoustic_regime(db_1min),
+            speech_detected=self._vad.speech_detected,
             noise_trend=trend,
         )
 
-        # Location
+        # Location (with movement detection)
         loc_reading = self._location.current
         location = LocationState()
         if loc_reading:
@@ -192,7 +221,9 @@ class EnvironmentDaemon:
                 longitude=round(loc_reading.longitude, 5),
                 altitude_m=round(loc_reading.altitude_m, 1),
                 accuracy_m=round(loc_reading.accuracy_m, 1),
-                stationary=True,  # TODO: detect movement from history
+                stationary=self._location.is_stationary,
+                since=self._location.stationary_since_iso,
+                locations_today=self._location.locations_today_labels,
             )
             # Update seismic API with location
             self._seismic_api.set_location(loc_reading.latitude, loc_reading.longitude)
@@ -222,7 +253,7 @@ class EnvironmentDaemon:
         )
 
     def stop(self) -> None:
-        """Stop all sensors."""
+        """Stop all sensors and close persistence."""
         if self._accel_source:
             self._accel_source.stop()
         if self._mic_source:
@@ -230,6 +261,8 @@ class EnvironmentDaemon:
         self._location.stop()
         self._webcam.stop()
         self._seismic_api.stop()
+        if self._enable_persistence:
+            self._store.close()
         self._running = False
 
     def __enter__(self):

@@ -1,24 +1,19 @@
-"""Claude Agent SDK integration — hook + system prompt helpers.
+"""Claude Agent SDK integration — prompt enrichment + system prompt helpers.
 
 Plugs the EnvironmentDaemon into any claude_agent_sdk.query() call
 so the agent receives fresh environmental context at every turn.
 
 Usage:
-    from quantum_seismic import EnvironmentDaemon, agent_hook, system_prompt
-    from claude_agent_sdk import query, ClaudeAgentOptions, HookMatcher
+    from quantum_seismic import EnvironmentDaemon, enrich_prompt, system_prompt
+    from claude_agent_sdk import query, ClaudeAgentOptions
 
     daemon = EnvironmentDaemon()
     daemon.start()
 
     async for message in query(
-        prompt=user_input,
+        prompt=enrich_prompt(daemon, user_input),
         options=ClaudeAgentOptions(
             system_prompt=system_prompt(),
-            hooks={
-                "UserPromptSubmit": [
-                    HookMatcher(matcher=".*", hooks=[agent_hook(daemon)])
-                ]
-            },
         ),
     ):
         ...
@@ -55,39 +50,50 @@ def system_prompt(extra: str = "") -> str:
     return base
 
 
+def enrich_prompt(daemon: EnvironmentDaemon, user_input: str) -> str:
+    """Append the current environment snapshot to the user's message.
+
+    This is the primary integration point. Call this before passing
+    the prompt to claude_agent_sdk.query():
+
+        prompt=enrich_prompt(daemon, user_input)
+
+    The agent sees the user's text followed by an <environment> XML block.
+    """
+    snapshot = daemon.snapshot()
+    return f"{user_input}\n\n{snapshot.to_context_block()}"
+
+
+def dynamic_system_prompt(daemon: EnvironmentDaemon, extra: str = "") -> str:
+    """Generate a system prompt that includes the current environment snapshot.
+
+    Alternative to enrich_prompt() — injects context into the system prompt
+    instead of the user message. Useful for single-turn queries where you
+    want the context always present.
+    """
+    base = system_prompt(extra)
+    snapshot = daemon.snapshot()
+    return f"{base}\n\nCurrent environment state:\n{snapshot.to_context_block()}"
+
+
+# Keep backward compat
 def agent_hook(daemon: EnvironmentDaemon):
-    """Create a UserPromptSubmit hook that injects environment context.
+    """Create a hook callback (for experimentation with SDK hook system).
 
-    Returns an async callback compatible with claude_agent_sdk HookMatcher.
-
-    The hook appends the current environment snapshot as an <environment>
-    XML block to the user's message, so the agent sees it alongside
-    whatever the user typed.
+    Note: UserPromptSubmit hooks in the Agent SDK are for validation/logging,
+    not prompt mutation. Use enrich_prompt() instead for reliable context
+    injection.
     """
 
     async def inject_environment(input_data, tool_use_id=None, context=None):
-        """Hook callback — called before each user message is processed."""
         snapshot = daemon.snapshot()
         context_block = snapshot.to_context_block()
-
-        # Append environment context to the user's prompt
         if isinstance(input_data, dict):
             current_prompt = input_data.get("prompt", "")
             if current_prompt:
                 input_data["prompt"] = f"{current_prompt}\n\n{context_block}"
             else:
                 input_data["prompt"] = context_block
-
         return input_data
 
     return inject_environment
-
-
-def snapshot_as_message(daemon: EnvironmentDaemon) -> str:
-    """Get the current environment snapshot formatted as a context block.
-
-    Useful for manual injection into prompts without using hooks:
-
-        prompt = f"{user_input}\\n\\n{snapshot_as_message(daemon)}"
-    """
-    return daemon.snapshot().to_context_block()

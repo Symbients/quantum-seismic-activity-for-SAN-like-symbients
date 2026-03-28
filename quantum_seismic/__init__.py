@@ -8,11 +8,12 @@ __version__ = "0.2.0"
 
 from quantum_seismic.daemon import EnvironmentDaemon
 from quantum_seismic.snapshot import EnvironmentSnapshot
-from quantum_seismic.agent import agent_hook, system_prompt
+from quantum_seismic.agent import agent_hook, enrich_prompt, system_prompt
 
 __all__ = [
     "EnvironmentDaemon",
     "EnvironmentSnapshot",
     "agent_hook",
+    "enrich_prompt",
     "system_prompt",
 ]
