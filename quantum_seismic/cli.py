@@ -1,138 +1,159 @@
-"""CLI entry point for quantum-seismic."""
+"""CLI entry point — run the daemon and print snapshots or start an agent."""
 
 import argparse
+import asyncio
+import json
+import signal
 import sys
+import time
 
 
 def main():
     parser = argparse.ArgumentParser(
         prog="quantum-seismic",
-        description="Desk seismograph — seismic impact detection using MacBook sensors",
+        description="Ambient environmental sensing for AI agents",
     )
     parser.add_argument(
-        "--source",
-        choices=["mic", "sim", "accel"],
-        default="sim",
-        help="Sensor source: accel (hardware accelerometer, requires sudo), mic (microphone), or sim (simulator, default)",
+        "--mode",
+        choices=["daemon", "snapshot", "agent"],
+        default="daemon",
+        help="daemon: run continuously and print snapshots; snapshot: single snapshot; agent: start interactive agent",
     )
     parser.add_argument(
-        "--sample-rate",
-        type=int,
-        default=44100,
-        help="Sample rate in Hz (default: 44100)",
+        "--interval",
+        type=float,
+        default=10.0,
+        help="Snapshot interval in seconds for daemon mode (default: 10)",
     )
     parser.add_argument(
-        "--chunk-size",
-        type=int,
-        default=2048,
-        help="Samples per processing chunk (default: 2048)",
-    )
-    parser.add_argument(
-        "--device",
-        type=str,
-        default=None,
-        help="Audio device name or index (default: system default)",
-    )
-    parser.add_argument(
-        "--headless",
+        "--no-accel",
         action="store_true",
-        help="Run without UI — print events to stdout as JSON",
+        help="Disable accelerometer (skip sudo requirement)",
     )
     parser.add_argument(
-        "--seed",
-        type=int,
-        default=None,
-        help="Random seed for simulator (for reproducible demos)",
+        "--no-mic",
+        action="store_true",
+        help="Disable microphone",
+    )
+    parser.add_argument(
+        "--no-location",
+        action="store_true",
+        help="Disable GPS/location tracking",
+    )
+    parser.add_argument(
+        "--no-webcam",
+        action="store_true",
+        help="Disable webcam capture",
+    )
+    parser.add_argument(
+        "--no-seismic-api",
+        action="store_true",
+        help="Disable external seismic API",
+    )
+    parser.add_argument(
+        "--webcam-interval",
+        type=float,
+        default=300.0,
+        help="Webcam capture interval in seconds (default: 300)",
     )
 
     args = parser.parse_args()
 
-    # Build source
-    from quantum_seismic.sources.base import SensorConfig
+    from quantum_seismic.daemon import EnvironmentDaemon
 
-    config = SensorConfig(
-        sample_rate=args.sample_rate,
-        chunk_size=args.chunk_size,
-        device=int(args.device) if args.device and args.device.isdigit() else args.device,
+    daemon = EnvironmentDaemon(
+        enable_accel=not args.no_accel,
+        enable_mic=not args.no_mic,
+        enable_location=not args.no_location,
+        enable_webcam=not args.no_webcam,
+        enable_seismic_api=not args.no_seismic_api,
+        webcam_interval_s=args.webcam_interval,
     )
 
-    if args.source == "accel":
-        from quantum_seismic.sources.accelerometer import AccelerometerSource
+    if args.mode == "snapshot":
+        daemon.start()
+        time.sleep(2)  # let sensors warm up
+        print(daemon.snapshot().to_json(indent=2))
+        daemon.stop()
 
-        # Override defaults for accelerometer (800Hz native, smaller chunks)
-        config.sample_rate = args.sample_rate if args.sample_rate != 44100 else 800
-        config.chunk_size = args.chunk_size if args.chunk_size != 2048 else 256
-        source = AccelerometerSource(config)
-    elif args.source == "mic":
-        from quantum_seismic.sources.microphone import MicrophoneSource
+    elif args.mode == "agent":
+        _run_agent(daemon)
 
-        source = MicrophoneSource(config)
-    else:
-        from quantum_seismic.sources.simulator import SimulatorSource
-
-        source = SimulatorSource(config, seed=args.seed)
-
-    # Build pipeline
-    from quantum_seismic.pipeline import Pipeline
-
-    pipeline = Pipeline(source)
-
-    if args.headless:
-        _run_headless(pipeline)
-    else:
-        _run_ui(pipeline)
+    else:  # daemon
+        _run_daemon(daemon, args.interval)
 
 
-def _run_headless(pipeline):
-    """Print events as JSON lines to stdout."""
-    import json
-    import signal
-    import time
-
-    def on_state(state):
-        if state.event is not None:
-            evt = state.event
-            record = {
-                "timestamp": evt.timestamp,
-                "event": evt.event_type.value,
-                "confidence": evt.confidence,
-                "severity": evt.severity,
-                "fingerprint": evt.fingerprint,
-            }
-            print(json.dumps(record), flush=True)
-
-    pipeline.on_state(on_state)
+def _run_daemon(daemon, interval: float):
+    """Run daemon and print periodic snapshots as JSONL."""
 
     def shutdown(*_):
-        pipeline.stop()
+        daemon.stop()
         sys.exit(0)
 
     signal.signal(signal.SIGINT, shutdown)
     signal.signal(signal.SIGTERM, shutdown)
 
-    pipeline.start()
-    print('{"status": "running", "source": "' + type(pipeline.source).__name__ + '"}', flush=True)
+    daemon.start()
+    print(json.dumps({"status": "running", "interval_s": interval}), flush=True)
 
+    while True:
+        time.sleep(interval)
+        print(daemon.snapshot().to_json(), flush=True)
+
+
+def _run_agent(daemon):
+    """Start an interactive agent with environment context."""
     try:
+        from claude_agent_sdk import ClaudeAgentOptions, HookMatcher, query
+    except ImportError:
+        print(
+            "claude-agent-sdk is required for agent mode. "
+            "Install with: uv pip install 'quantum-seismic[agent]'",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    from quantum_seismic.agent import agent_hook, system_prompt
+
+    daemon.start()
+    time.sleep(2)  # sensor warm-up
+
+    async def run():
+        print("Environment daemon running. Type your message (Ctrl+C to quit):\n")
         while True:
-            time.sleep(0.1)
-    except KeyboardInterrupt:
-        pipeline.stop()
+            try:
+                user_input = input("> ")
+            except (EOFError, KeyboardInterrupt):
+                break
 
+            if not user_input.strip():
+                continue
 
-def _run_ui(pipeline):
-    """Run the Textual terminal UI."""
-    from quantum_seismic.ui import SeismicApp
+            async for message in query(
+                prompt=user_input,
+                options=ClaudeAgentOptions(
+                    system_prompt=system_prompt(),
+                    allowed_tools=["Read", "Bash", "Glob", "Grep", "WebSearch", "WebFetch"],
+                    hooks={
+                        "UserPromptSubmit": [
+                            HookMatcher(matcher=".*", hooks=[agent_hook(daemon)])
+                        ]
+                    },
+                ),
+            ):
+                if hasattr(message, "content"):
+                    for block in message.content:
+                        if hasattr(block, "text"):
+                            print(block.text)
+                elif hasattr(message, "result"):
+                    print(f"\n[{message.subtype}]")
 
-    app = SeismicApp(pipeline=pipeline)
+            print()
 
-    # Start pipeline when app mounts (handled in on_mount)
-    # Stop pipeline when app exits
-    pipeline.start()
     try:
-        app.run()
+        asyncio.run(run())
     finally:
-        pipeline.stop()
+        daemon.stop()
 
 
 if __name__ == "__main__":

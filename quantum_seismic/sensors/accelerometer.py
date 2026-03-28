@@ -19,7 +19,7 @@ import time
 
 import numpy as np
 
-from quantum_seismic.sources.base import SensorChunk, SensorConfig, SensorSource
+from quantum_seismic.sensors.base import SensorChunk, SensorConfig, SensorSource
 
 
 class AccelerometerSource(SensorSource):

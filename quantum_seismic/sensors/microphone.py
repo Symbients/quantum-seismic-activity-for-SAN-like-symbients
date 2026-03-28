@@ -5,7 +5,7 @@ import time
 import numpy as np
 import sounddevice as sd
 
-from quantum_seismic.sources.base import SensorChunk, SensorConfig, SensorSource
+from quantum_seismic.sensors.base import SensorChunk, SensorConfig, SensorSource
 
 
 class MicrophoneSource(SensorSource):
